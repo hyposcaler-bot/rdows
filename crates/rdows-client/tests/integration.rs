@@ -571,7 +571,7 @@ async fn atomic_bounds_error() {
 #[tokio::test]
 async fn send_exhausts_recv_queue() {
     let _ = tracing_subscriber::fmt::try_init();
-    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 3 }).await;
+    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 3, ..ServerConfig::default() }).await;
     let mut conn = server.connect().await;
 
     let mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 256).await.unwrap();
@@ -632,7 +632,7 @@ async fn send_exhausts_recv_queue() {
 #[tokio::test]
 async fn send_recv_queue_depth_one() {
     let _ = tracing_subscriber::fmt::try_init();
-    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 1 }).await;
+    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 1, ..ServerConfig::default() }).await;
     let mut conn = server.connect().await;
 
     let mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 256).await.unwrap();
@@ -665,7 +665,7 @@ async fn send_recv_queue_depth_one() {
 #[tokio::test]
 async fn send_recv_queue_depth_zero() {
     let _ = tracing_subscriber::fmt::try_init();
-    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 0 }).await;
+    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 0, ..ServerConfig::default() }).await;
     let mut conn = server.connect().await;
 
     let mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 256).await.unwrap();
@@ -692,7 +692,7 @@ async fn send_recv_queue_depth_zero() {
 #[tokio::test]
 async fn err_rnr_does_not_close_connection() {
     let _ = tracing_subscriber::fmt::try_init();
-    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 0 }).await;
+    let server = TestServer::start_with_config(ServerConfig { recv_queue_depth: 0, ..ServerConfig::default() }).await;
     let mut conn = server.connect().await;
 
     let mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 256).await.unwrap();
@@ -893,6 +893,92 @@ async fn send_credits_exhausted() {
         RdowsError::SendCreditsExhausted => {}
         other => panic!("expected SendCreditsExhausted, got: {other}"),
     }
+
+    conn.disconnect().await.unwrap();
+}
+
+// ===========================================================================
+// DoS Limits (RFC Section 12.3)
+// ===========================================================================
+
+#[tokio::test]
+async fn max_mrs_per_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start_with_config(ServerConfig {
+        max_regions_per_session: 3,
+        ..ServerConfig::default()
+    })
+    .await;
+    let mut conn = server.connect().await;
+
+    // First 3 registrations succeed
+    for _ in 0..3 {
+        conn.reg_mr(AccessFlags::REMOTE_READ, 64).await.unwrap();
+    }
+
+    // 4th should fail
+    let err = conn.reg_mr(AccessFlags::REMOTE_READ, 64).await;
+    match err {
+        Err(RdowsError::Protocol(code)) => {
+            assert_eq!(code, ErrorCode::ErrInternal);
+        }
+        Err(other) => panic!("expected ErrInternal, got: {other}"),
+        Ok(_) => panic!("expected error, got success"),
+    }
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn max_total_memory() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start_with_config(ServerConfig {
+        max_total_bytes_per_session: 1024,
+        ..ServerConfig::default()
+    })
+    .await;
+    let mut conn = server.connect().await;
+
+    // Two 512-byte MRs succeed
+    conn.reg_mr(AccessFlags::REMOTE_READ, 512).await.unwrap();
+    conn.reg_mr(AccessFlags::REMOTE_READ, 512).await.unwrap();
+
+    // Third 256-byte MR exceeds 1024 total
+    let err = conn.reg_mr(AccessFlags::REMOTE_READ, 256).await;
+    match err {
+        Err(RdowsError::Protocol(code)) => {
+            assert_eq!(code, ErrorCode::ErrBounds);
+        }
+        Err(other) => panic!("expected ErrBounds, got: {other}"),
+        Ok(_) => panic!("expected error, got success"),
+    }
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn mr_dereg_frees_capacity() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start_with_config(ServerConfig {
+        max_regions_per_session: 2,
+        ..ServerConfig::default()
+    })
+    .await;
+    let mut conn = server.connect().await;
+
+    // Fill to capacity
+    let mr1 = conn.reg_mr(AccessFlags::REMOTE_READ, 64).await.unwrap();
+    conn.reg_mr(AccessFlags::REMOTE_READ, 64).await.unwrap();
+
+    // At limit — next should fail
+    let err = conn.reg_mr(AccessFlags::REMOTE_READ, 64).await;
+    assert!(err.is_err());
+
+    // Deregister one
+    conn.dereg_mr(mr1.lkey).await.unwrap();
+
+    // Now registration succeeds again
+    conn.reg_mr(AccessFlags::REMOTE_READ, 64).await.unwrap();
 
     conn.disconnect().await.unwrap();
 }

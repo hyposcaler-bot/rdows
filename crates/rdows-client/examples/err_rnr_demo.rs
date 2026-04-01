@@ -114,7 +114,7 @@ async fn start_embedded_server() -> (std::net::SocketAddr, rustls::ClientConfig)
     let addr = listener.local_addr().unwrap();
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    let config = rdows_server::ServerConfig { recv_queue_depth: 3 };
+    let config = rdows_server::ServerConfig { recv_queue_depth: 3, ..rdows_server::ServerConfig::default() };
     tokio::spawn(async move {
         rdows_server::run_server(listener, acceptor, config).await;
     });

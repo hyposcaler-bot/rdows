@@ -19,21 +19,27 @@ pub struct MemoryStore {
     rkey_to_lkey: HashMap<u32, u32>,
     used_rkeys: HashSet<u32>,
     next_lkey: u32,
+    total_registered_bytes: u64,
+    max_regions: usize,
+    max_total_bytes: u64,
 }
 
 impl Default for MemoryStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(4096, 32 * 1024 * 1024 * 1024)
     }
 }
 
 impl MemoryStore {
-    pub fn new() -> Self {
+    pub fn new(max_regions: usize, max_total_bytes: u64) -> Self {
         Self {
             regions: HashMap::new(),
             rkey_to_lkey: HashMap::new(),
             used_rkeys: HashSet::new(),
             next_lkey: 1,
+            total_registered_bytes: 0,
+            max_regions,
+            max_total_bytes,
         }
     }
 
@@ -43,6 +49,13 @@ impl MemoryStore {
         access_flags: AccessFlags,
         region_len: u64,
     ) -> Result<(LKey, RKey), ErrorCode> {
+        if self.regions.len() >= self.max_regions {
+            return Err(ErrorCode::ErrInternal);
+        }
+        if self.total_registered_bytes + region_len > self.max_total_bytes {
+            return Err(ErrorCode::ErrBounds);
+        }
+
         let lkey = LKey(self.next_lkey);
         self.next_lkey += 1;
 
@@ -59,6 +72,7 @@ impl MemoryStore {
 
         self.rkey_to_lkey.insert(rkey.0, lkey.0);
         self.regions.insert(lkey.0, entry);
+        self.total_registered_bytes += region_len;
 
         Ok((lkey, rkey))
     }
@@ -74,8 +88,10 @@ impl MemoryStore {
         }
 
         let rkey = entry.rkey;
+        let region_len = entry.data.len() as u64;
         self.rkey_to_lkey.remove(&rkey.0);
         self.regions.remove(&lkey.0);
+        self.total_registered_bytes -= region_len;
         // R_Key stays in used_rkeys — never reuse within session
         Ok(())
     }

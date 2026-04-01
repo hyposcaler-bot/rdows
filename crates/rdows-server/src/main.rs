@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&bind).await?;
     info!(bind = %bind, "starting RDoWS server");
 
-    let config = rdows_server::ServerConfig { recv_queue_depth };
+    let config = rdows_server::ServerConfig { recv_queue_depth, ..rdows_server::ServerConfig::default() };
     rdows_server::run_server(listener, acceptor, config).await;
     Ok(())
 }

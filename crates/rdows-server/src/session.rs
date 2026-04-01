@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 use tokio_rustls::server::TlsStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -15,6 +16,7 @@ use rdows_core::opcode::Opcode;
 use rdows_core::{DEFAULT_ICC, DEFAULT_MAX_MSG_SIZE, RDOWS_VERSION};
 
 use crate::handler;
+use crate::ServerConfig;
 
 pub type WsStream = WebSocketStream<TlsStream<TcpStream>>;
 pub type WsSink = SplitSink<WsStream, Message>;
@@ -38,22 +40,35 @@ pub struct Session {
     pub expected_remote_seq: Option<u32>,
     pub sends_since_last_credit: u32,
     pub icc: u32,
+    pub outstanding_reads: u32,
+    pub max_outstanding_reads: u32,
+    pub mr_reg_count: u32,
+    pub mr_reg_window_start: Instant,
+    pub mr_reg_rate_limit: u32,
 }
 
 impl Session {
-    fn new(recv_queue_depth: u32) -> Self {
+    fn new(config: &ServerConfig) -> Self {
         Self {
             state: SessionState::AwaitingConnect,
             session_id: 0,
             pd: ProtectionDomain(0),
             max_msg_size: DEFAULT_MAX_MSG_SIZE,
             next_seq: 0,
-            memory_store: crate::memory_store::MemoryStore::new(),
+            memory_store: crate::memory_store::MemoryStore::new(
+                config.max_regions_per_session,
+                config.max_total_bytes_per_session,
+            ),
             pending_op: handler::PendingOp::None,
-            recv_queue_depth,
+            recv_queue_depth: config.recv_queue_depth,
             expected_remote_seq: None,
             sends_since_last_credit: 0,
             icc: DEFAULT_ICC,
+            outstanding_reads: 0,
+            max_outstanding_reads: config.max_outstanding_reads,
+            mr_reg_count: 0,
+            mr_reg_window_start: Instant::now(),
+            mr_reg_rate_limit: config.mr_reg_rate_limit,
         }
     }
 
@@ -64,9 +79,9 @@ impl Session {
     }
 }
 
-pub async fn run_session(ws: WsStream, recv_queue_depth: u32) {
+pub async fn run_session(ws: WsStream, config: &ServerConfig) {
     let (mut sink, mut stream) = ws.split();
-    let mut session = Session::new(recv_queue_depth);
+    let mut session = Session::new(config);
 
     while let Some(msg_result) = stream.next().await {
         let msg = match msg_result {

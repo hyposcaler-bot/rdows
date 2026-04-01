@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use tokio::time::Instant;
+
 use rdows_core::error::{ErrorCode, RdowsError};
 use rdows_core::memory::AccessFlags;
 use rdows_core::message::{
@@ -63,6 +67,24 @@ async fn handle_mr_reg(
     payload: rdows_core::message::MrRegPayload,
     sink: &mut WsSink,
 ) -> Result<(), RdowsError> {
+    // Rate limit MR registrations
+    let now = Instant::now();
+    if now.duration_since(session.mr_reg_window_start) >= Duration::from_secs(1) {
+        session.mr_reg_count = 0;
+        session.mr_reg_window_start = now;
+    }
+    if session.mr_reg_count >= session.mr_reg_rate_limit {
+        let header = session.next_header(Opcode::MrRegAck, wrid);
+        let ack = MrRegAckPayload {
+            pd: payload.pd,
+            lkey: rdows_core::memory::LKey(0),
+            rkey: rdows_core::memory::RKey(0),
+            status: ErrorCode::ErrInternal.into(),
+        };
+        return send_message(sink, &RdowsMessage::MrRegAck(header, ack)).await;
+    }
+    session.mr_reg_count += 1;
+
     match session
         .memory_store
         .register(payload.pd, payload.access_flags, payload.region_len)
@@ -266,12 +288,25 @@ async fn handle_read_req(
     payload: rdows_core::message::ReadReqPayload,
     sink: &mut WsSink,
 ) -> Result<(), RdowsError> {
+    if session.outstanding_reads >= session.max_outstanding_reads {
+        return send_error(
+            session,
+            sink,
+            ErrorCode::ErrRnr,
+            header.sequence,
+            "too many outstanding reads",
+        )
+        .await;
+    }
+    session.outstanding_reads += 1;
+
     let data = match session
         .memory_store
         .read_region(payload.rkey, payload.remote_va, payload.read_len)
     {
         Ok(slice) => bytes::Bytes::copy_from_slice(slice),
         Err(code) => {
+            session.outstanding_reads -= 1;
             return send_error(session, sink, code, header.sequence, "").await;
         }
     };
@@ -281,7 +316,10 @@ async fn handle_read_req(
         fragment_offset: 0,
         data,
     };
-    send_message(sink, &RdowsMessage::ReadResp(resp_header, resp_payload)).await
+    let result =
+        send_message(sink, &RdowsMessage::ReadResp(resp_header, resp_payload)).await;
+    session.outstanding_reads -= 1;
+    result
 }
 
 async fn handle_atomic_req(
