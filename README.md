@@ -307,6 +307,27 @@ cargo test --workspace
 cargo clippy --workspace
 ```
 
+### Wireshark Capture
+
+![Wireshark capture showing decrypted RDoWS WRITE_DATA frame with full protocol dissection](docs/wireshark-capture.png)
+
+## Wireshark Dissector
+
+A Lua dissector for Wireshark is included in `wireshark/rdows.lua`. It parses
+the 24-byte RDoWS header and all opcode payloads inside decrypted WebSocket
+binary frames. See [wireshark/README.md](wireshark/README.md) for setup.
+
+To capture decrypted traffic, set `SSLKEYLOGFILE` on both client and server:
+
+```sh
+SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-server -- --cert server.crt --key server.key
+SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-client -- --cert server.crt
+```
+
+Then point Wireshark's TLS key log (Preferences > Protocols > TLS) at
+`/tmp/rdows-keys.log`. The dissector registers automatically on the `rdows.v1`
+WebSocket subprotocol.
+
 ## References
 
 - [RDoWS Protocol Specification](docs/rdows-rfc.txt) (RFC XXXX)
