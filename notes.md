@@ -1,0 +1,2 @@
+The CONNECT payload format isn't explicitly diagrammed in the RFC — it's described textually across Sections 3.2 and 9. We'll define it as: PD Handle (u32), Capability Flags (u32),
+  Max_Message_Size (u32), ICC (u32) = 16 bytes. This covers all mentioned fields.

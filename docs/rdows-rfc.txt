@@ -1,0 +1,900 @@
+Internet Engineering Task Force (IETF)                      C. Svensson
+Request for Comments: XXXX                                    Individual
+Category: Standards Track                                    March 2026
+ISSN: 2070-1721
+
+
+         RDMA over WebSockets (RDoWS): Protocol Specification
+
+
+Abstract
+
+   This document specifies the RDMA over WebSockets (RDoWS) protocol,
+   which enables Remote Direct Memory Access (RDMA) semantics over the
+   WebSocket transport protocol (RFC 6455).  RDoWS allows applications
+   running in environments restricted to HTTP/WebSocket connectivity --
+   such as browser-based clients, cloud functions, and firewall-
+   traversal scenarios -- to benefit from RDMA-style zero-copy data
+   transfer, one-sided operations, and memory region management without
+   requiring kernel bypass or specialized hardware at the application
+   layer.  RDoWS is a software emulation layer; it does not require
+   InfiniBand, RoCE, or iWARP hardware and is intended for deployments
+   where such hardware is unavailable or where port constraints mandate
+   WebSocket transport.
+
+Status of This Memo
+
+   This is an Internet Standards Track document.
+
+   This document is a product of the Internet Engineering Task Force
+   (IETF).  It represents the consensus of the IETF community.  It has
+   received public review and has been approved for publication by the
+   Internet Engineering Steering Group (IESG).  Further information on
+   Internet Standards is available in Section 2 of RFC 7841.
+
+   Information about the current status of this document, any errata,
+   and how to provide feedback on it may be obtained at
+   https://www.rfc-editor.org/info/rfcXXXX.
+
+Copyright Notice
+
+   Copyright (c) 2026 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.
+
+
+Table of Contents
+
+   1.  Introduction  . . . . . . . . . . . . . . . . . . . . . . . .  3
+     1.1.  Motivation  . . . . . . . . . . . . . . . . . . . . . . .  3
+     1.2.  Design Philosophy . . . . . . . . . . . . . . . . . . . .  4
+     1.3.  Scope and Non-Goals . . . . . . . . . . . . . . . . . . .  4
+   2.  Terminology . . . . . . . . . . . . . . . . . . . . . . . . .  5
+   3.  Protocol Overview . . . . . . . . . . . . . . . . . . . . . .  6
+     3.1.  Layering  . . . . . . . . . . . . . . . . . . . . . . . .  6
+     3.2.  Connection Model  . . . . . . . . . . . . . . . . . . . .  7
+     3.3.  Queue Pair Model  . . . . . . . . . . . . . . . . . . . .  8
+   4.  WebSocket Subprotocol Registration  . . . . . . . . . . . . .  8
+   5.  Message Format  . . . . . . . . . . . . . . . . . . . . . . .  9
+     5.1.  RDoWS Frame Header . . . . . . . . . . . . . . . . . . .  9
+     5.2.  Opcode Definitions . . . . . . . . . . . . . . . . . . . 11
+   6.  Memory Region Management  . . . . . . . . . . . . . . . . . . 12
+     6.1.  Registration  . . . . . . . . . . . . . . . . . . . . . . 12
+     6.2.  Memory Keys (MKey) . . . . . . . . . . . . . . . . . . . 13
+     6.3.  Deregistration  . . . . . . . . . . . . . . . . . . . . . 14
+   7.  Queue Pair Operations . . . . . . . . . . . . . . . . . . . . 14
+     7.1.  Send/Receive  . . . . . . . . . . . . . . . . . . . . . . 14
+     7.2.  RDMA Write  . . . . . . . . . . . . . . . . . . . . . . . 15
+     7.3.  RDMA Read . . . . . . . . . . . . . . . . . . . . . . . . 16
+     7.4.  Atomic Operations . . . . . . . . . . . . . . . . . . . . 17
+   8.  Completion Queue  . . . . . . . . . . . . . . . . . . . . . . 18
+   9.  Flow Control  . . . . . . . . . . . . . . . . . . . . . . . . 19
+  10.  Fragmentation and Reassembly . . . . . . . . . . . . . . . . . 20
+  11.  Error Handling . . . . . . . . . . . . . . . . . . . . . . . . 21
+  12.  Security Considerations  . . . . . . . . . . . . . . . . . . . 22
+    12.1. Transport Security . . . . . . . . . . . . . . . . . . . . 22
+    12.2. Memory Key Protection  . . . . . . . . . . . . . . . . . . 22
+    12.3. Denial-of-Service Considerations . . . . . . . . . . . . . 23
+  13.  IANA Considerations  . . . . . . . . . . . . . . . . . . . . . 23
+  14.  References . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+    14.1. Normative References . . . . . . . . . . . . . . . . . . . 24
+    14.2. Informative References . . . . . . . . . . . . . . . . . . 24
+  Acknowledgements . . . . . . . . . . . . . . . . . . . . . . . . . 25
+  Author's Address . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+
+1.  Introduction
+
+1.1.  Motivation
+
+   Remote Direct Memory Access is a technique that allows one network
+   endpoint to read from or write to the memory of a remote endpoint
+   without involving the remote host's CPU in the data path.  Hardware
+   RDMA fabrics (InfiniBand, RoCEv2, iWARP) deliver outstanding
+   throughput and latency characteristics for HPC, storage, and AI
+   training workloads.  These fabrics, however, require either
+   specialized network interface cards or operate on raw Ethernet frames
+   and therefore cannot traverse standard Internet middleboxes such as
+   firewalls, NAT devices, and HTTP proxies.
+
+   WebSocket (RFC 6455) provides a bidirectional, full-duplex
+   application-layer channel multiplexed over a single TCP connection,
+   established via HTTP Upgrade.  WebSocket connections can traverse
+   virtually all enterprise firewalls, load balancers, and CDN
+   infrastructures.  Several emerging use cases require RDMA-like
+   semantics in exactly these constrained environments:
+
+   o  Distributed AI inference endpoints accessed by browser clients.
+
+   o  Cloud-native shared-memory data planes between microservices
+      separated by API gateways.
+
+   o  HPC job schedulers that expose a control channel only via HTTPS.
+
+   o  Edge computing nodes behind carrier-grade NAT.
+
+   RDoWS provides a software emulation of RDMA semantics -- memory
+   region registration, one-sided operations, queue pairs, and
+   completion queues -- over a WebSocket transport, enabling these use
+   cases without hardware requirements.
+
+1.2.  Design Philosophy
+
+   RDoWS adheres to the following design priorities, in order:
+
+   1.  Semantic compatibility:  The RDoWS API surface is intentionally
+       isomorphic to the ibverbs/libibverbs verb model so that
+       applications written for hardware RDMA can be ported with minimal
+       modification.
+
+   2.  Transport agnosticism:  RDoWS message framing is defined
+       independently of WebSocket details wherever possible so that
+       future documents may define RDoWS over QUIC, HTTP/2 streams, or
+       other transports.
+
+   3.  Zero superfluous copies:  Where a host language or runtime
+       permits direct buffer management (e.g., SharedArrayBuffer in
+       WebAssembly environments), RDoWS implementations SHOULD minimize
+       internal data copies.
+
+   4.  Incrementally deployable:  An RDoWS endpoint MUST interoperate
+       with an RFC 6455 compliant WebSocket server even if the server
+       does not implement RDoWS; the subprotocol negotiation mechanism
+       ensures graceful fallback.
+
+1.3.  Scope and Non-Goals
+
+   RDoWS is NOT:
+
+   o  A replacement for hardware RDMA on RDMA-capable networks.  The
+      latency and throughput characteristics of RDoWS are bounded by the
+      underlying TCP and WebSocket stacks.
+
+   o  A kernel-bypass mechanism.  RDoWS operates entirely in user space.
+
+   o  A security boundary.  Memory isolation guarantees that hardware
+      RDMA hardware enforces in silicon are absent in RDoWS; security
+      depends entirely on the TLS layer and the memory key access
+      control model defined in Section 6.2.
+
+   o  A specification of any particular language binding.  Language-
+      specific APIs are left to companion documents.
+
+
+2.  Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and
+   "OPTIONAL" in this document are to be interpreted as described in
+   BCP 14 (RFC 2119, RFC 8174) when, and only when, they appear in all
+   capitals, as shown here.
+
+   Completion Queue (CQ):
+      An ordered queue of Completion Queue Entries (CQEs) generated by
+      the local RDoWS implementation when a Work Request completes,
+      either successfully or with error.
+
+   Completion Queue Entry (CQE):
+      A record placed in the CQ upon completion of a Work Request.
+      Contains the Work Request Identifier, status code, byte count, and
+      opaque context value supplied by the application.
+
+   Initiator:
+      The RDoWS endpoint that originates a one-sided operation (RDMA
+      Write or RDMA Read).  Corresponds to the requester in ibverbs
+      terminology.
+
+   Memory Key (MKey):
+      A 32-bit opaque token that authorizes access to a registered
+      Memory Region.  MKeys are generated by the local RDoWS
+      implementation and exchanged out-of-band by the application.
+
+   Memory Region (MR):
+      A contiguous range of the local address space registered with the
+      RDoWS implementation for remote access.
+
+   Protection Domain (PD):
+      A logical grouping of Memory Regions and Queue Pairs.  Resources
+      in different Protection Domains MUST NOT interact with one
+      another.  A Protection Domain is identified by a 32-bit PD
+      Handle.
+
+   Queue Pair (QP):
+      A pair of work queues -- a Send Queue (SQ) and a Receive Queue
+      (RQ) -- associated with a single RDoWS connection.
+
+   Receive Queue (RQ):
+      The queue into which the application posts Receive Work Requests.
+      Each Receive Work Request designates a buffer into which incoming
+      Send data will be placed.
+
+   Responder:
+      The RDoWS endpoint that services a one-sided operation originated
+      by the Initiator.  The Responder's CPU is not involved in data
+      placement beyond performing virtual-to-physical (or logical)
+      address translation on the registered Memory Region.
+
+   Send Queue (SQ):
+      The queue into which the application posts Send, RDMA Write, RDMA
+      Read, and Atomic Work Requests.
+
+   Work Request (WR):
+      A descriptor posted by the application to a Send or Receive Queue
+      specifying an operation to be performed.
+
+   Work Request Identifier (WRID):
+      A 64-bit opaque value supplied by the application when posting a
+      Work Request.  The WRID is returned unchanged in the corresponding
+      CQE.
+
+
+3.  Protocol Overview
+
+3.1.  Layering
+
+   RDoWS sits between the WebSocket framing layer and the application
+   verb API:
+
+        +-------------------------------------------------+
+        |           Application (ibverbs-style API)       |
+        +-------------------------------------------------+
+        |              RDoWS Protocol Layer               |
+        |  (Memory Regions, Queue Pairs, Completion Qs)  |
+        +-------------------------------------------------+
+        |           RDoWS Message Framing Layer           |
+        +-------------------------------------------------+
+        |    WebSocket (RFC 6455) Binary Message Layer    |
+        +-------------------------------------------------+
+        |              TLS 1.3 (REQUIRED)                 |
+        +-------------------------------------------------+
+        |                      TCP                        |
+        +-------------------------------------------------+
+
+   Each RDoWS message is transmitted as a single WebSocket binary
+   message.  Implementations MAY use WebSocket per-message deflate
+   (RFC 7692) for control messages; however, compression of data-
+   carrying messages (opcodes SEND_DATA, WRITE_DATA, READ_RESP) is NOT
+   RECOMMENDED because data payloads are typically already compressed
+   or incompressible.
+
+3.2.  Connection Model
+
+   An RDoWS session is established as follows:
+
+   1.  The Initiator opens a TLS 1.3 connection to the Responder.
+
+   2.  The Initiator sends an HTTP/1.1 Upgrade request including the
+       Sec-WebSocket-Protocol header with the value "rdows.v1":
+
+         GET /rdows HTTP/1.1
+         Host: responder.example.com
+         Upgrade: websocket
+         Connection: Upgrade
+         Sec-WebSocket-Key: <base64-nonce>
+         Sec-WebSocket-Version: 13
+         Sec-WebSocket-Protocol: rdows.v1
+
+   3.  The Responder, if it supports RDoWS, replies:
+
+         HTTP/1.1 101 Switching Protocols
+         Upgrade: websocket
+         Connection: Upgrade
+         Sec-WebSocket-Accept: <computed-accept>
+         Sec-WebSocket-Protocol: rdows.v1
+
+   4.  Both endpoints send an RDoWS CONNECT message (opcode 0x01)
+       conveying capability flags, maximum message size, and the
+       Protection Domain handle.
+
+   5.  After exchanging CONNECT_ACK messages (opcode 0x02), the session
+       is in the READY state and Queue Pair operations may proceed.
+
+   If the server does not echo "rdows.v1" in Sec-WebSocket-Protocol,
+   the client MUST close the WebSocket connection with Close code 1002
+   (Protocol Error) and MUST NOT transmit any RDoWS frames.
+
+3.3.  Queue Pair Model
+
+   Each RDoWS session implicitly creates one Queue Pair associated with
+   the WebSocket connection.  Applications requiring multiple QPs MUST
+   open multiple WebSocket connections to the same endpoint, each
+   independently negotiating the rdows.v1 subprotocol.
+
+   The RDoWS QP type is RELIABLE_CONNECTED (RC), analogous to the RC
+   transport service type in InfiniBand.  All operations are delivered
+   in order and with acknowledgment.  Unreliable Datagram (UD) and
+   Extended Reliable Connected (XRC) transport types are outside the
+   scope of this document and reserved for future extensions.
+
+
+4.  WebSocket Subprotocol Registration
+
+   This document requests that IANA register the following WebSocket
+   subprotocol:
+
+      Subprotocol Identifier:    rdows.v1
+      Subprotocol Common Name:   RDMA over WebSockets version 1
+      Subprotocol Definition:    This RFC
+
+
+5.  Message Format
+
+5.1.  RDoWS Frame Header
+
+   Every RDoWS message begins with a fixed 24-byte header, followed by
+   an optional variable-length payload.  The header is transmitted in
+   network byte order (big-endian).
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |    Version    |     Opcode    |            Flags              |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                        Session ID                            |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                      Sequence Number                         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Work Request ID (high)                    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Work Request ID (low)                     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                       Payload Length                         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                         Payload ...                          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+   Version (8 bits):
+      MUST be set to 0x01.  Receivers that observe an unknown version
+      MUST send an ERROR message and close the connection.
+
+   Opcode (8 bits):
+      Identifies the message type.  See Section 5.2.
+
+   Flags (16 bits):
+      Bit 15 (F):  Fragment flag.  When set, this message carries a
+         fragment of a larger logical payload.  See Section 10.
+      Bit 14 (L):  Last fragment.  Valid only when F=1.  When set,
+         this fragment is the last in a sequence.
+      Bit 13 (S):  Solicited event.  When set, the Responder SHOULD
+         generate a completion event promptly rather than batching.
+      Bits 12-0:   Reserved, MUST be set to zero.  Receivers MUST
+         ignore unknown flag bits.
+
+   Session ID (32 bits):
+      A locally unique identifier for the RDoWS session, assigned by
+      the Initiator during the CONNECT handshake.  Both endpoints echo
+      the Initiator's Session ID on all subsequent messages.
+
+   Sequence Number (32 bits):
+      A monotonically increasing counter, incremented by 1 for each
+      message sent.  Used for duplicate detection and ordered
+      delivery validation.  Wraps from 0xFFFFFFFF to 0x00000000.
+
+   Work Request ID (64 bits):
+      The WRID supplied by the application when the corresponding Work
+      Request was posted.  Set to zero for protocol messages that are
+      not associated with a Work Request (CONNECT, CONNECT_ACK, ACK,
+      ERROR, CREDIT_UPDATE).
+
+   Payload Length (32 bits):
+      The length in bytes of the payload following this header.  A
+      value of zero indicates no payload.  The maximum Payload Length
+      is negotiated during the CONNECT handshake and MUST NOT exceed
+      2^31 - 1 bytes.
+
+5.2.  Opcode Definitions
+
+   +---------+--------------+-----------------------------------------+
+   |  Opcode | Name         | Description                             |
+   +---------+--------------+-----------------------------------------+
+   |  0x01   | CONNECT      | Session establishment request           |
+   |  0x02   | CONNECT_ACK  | Session establishment acknowledgment    |
+   |  0x03   | DISCONNECT   | Orderly session teardown                |
+   |  0x10   | MR_REG       | Register a Memory Region                |
+   |  0x11   | MR_REG_ACK   | Memory Region registration response     |
+   |  0x12   | MR_DEREG     | Deregister a Memory Region              |
+   |  0x13   | MR_DEREG_ACK | Memory Region deregistration response   |
+   |  0x20   | SEND         | Two-sided SEND (consume posted Receive) |
+   |  0x21   | SEND_DATA    | Payload continuation for SEND           |
+   |  0x22   | RECV_COMP    | SEND received, posted to RQ buffer      |
+   |  0x30   | WRITE        | RDMA Write request (one-sided)          |
+   |  0x31   | WRITE_DATA   | Payload continuation for WRITE          |
+   |  0x32   | WRITE_COMP   | Notify Initiator of Write completion    |
+   |  0x40   | READ_REQ     | RDMA Read request (one-sided)           |
+   |  0x41   | READ_RESP    | RDMA Read response data                 |
+   |  0x50   | ATOMIC_REQ   | Atomic Compare-and-Swap or Fetch-Add   |
+   |  0x51   | ATOMIC_RESP  | Atomic operation response               |
+   |  0x60   | ACK          | Cumulative acknowledgment               |
+   |  0x61   | CREDIT_UPDATE| Flow control credit advertisement       |
+   |  0xF0   | ERROR        | Protocol or operation error             |
+   +---------+--------------+-----------------------------------------+
+
+   Opcode values 0x03-0x0F, 0x14-0x1F, 0x23-0x2F, 0x33-0x3F, 0x42-
+   0x4F, 0x52-0x5F, 0x62-0xEF, and 0xF1-0xFF are Reserved.  Receivers
+   MUST send an ERROR message upon receipt of an unknown opcode and
+   SHOULD close the connection.
+
+
+6.  Memory Region Management
+
+6.1.  Registration
+
+   An application registers a Memory Region by sending an MR_REG
+   message.  The MR_REG payload has the following structure:
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     PD Handle                                 |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                   Access Flags                                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                   Region Length (high 32 bits)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                   Region Length (low  32 bits)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |               Suggested Local Token (optional)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+   PD Handle (32 bits):
+      The Protection Domain within which this MR is to be registered.
+
+   Access Flags (32 bits):
+      A bitmask controlling what operations are permitted:
+        Bit 0 (LOCAL_WRITE):   Permit local write operations.
+        Bit 1 (REMOTE_WRITE):  Permit remote RDMA Write.
+        Bit 2 (REMOTE_READ):   Permit remote RDMA Read.
+        Bit 3 (REMOTE_ATOMIC): Permit remote Atomic operations.
+        Bits 4-31:             Reserved, MUST be zero.
+
+   Region Length (64 bits):
+      The size of the Memory Region in bytes.  An implementation MUST
+      support MR sizes up to at least 2^32 bytes.
+
+   Suggested Local Token (32 bits, optional):
+      The application MAY suggest a specific Local Key value.  The
+      implementation MAY honor or ignore this suggestion.  If omitted
+      (Payload Length == 16), the implementation selects the Local Key.
+
+   Upon successful registration, the Responder replies with MR_REG_ACK:
+
+      PD Handle (32 bits):  Echo of the requesting PD Handle.
+      Local Key (32 bits):  Key for local access (L_Key).
+      Remote Key (32 bits): Key for remote access (R_Key / MKey).
+      Status (16 bits):     0x0000 = success; see Section 11 for codes.
+      Reserved (16 bits):   MUST be zero.
+
+6.2.  Memory Keys (MKey)
+
+   The Remote Key (R_Key) returned in MR_REG_ACK is a 32-bit token that
+   a remote Initiator MUST present when performing RDMA Write, RDMA
+   Read, or Atomic operations targeting this MR.  The R_Key serves as
+   both an authorization token and a handle for address translation.
+
+   R_Keys MUST be:
+
+   o  Cryptographically unpredictable.  Implementations MUST use at
+      least 24 bits of entropy in R_Key generation.  Implementations
+      MUST NOT use sequential counters for R_Key assignment.
+
+   o  Invalidated upon MR deregistration.  Any subsequent operation
+      presenting an invalidated R_Key MUST be rejected with error code
+      ERR_INVALID_MKEY (0x0005).
+
+   o  Scoped to the Protection Domain.  An R_Key issued within one PD
+      MUST NOT authorize access to MRs in a different PD.
+
+   The Local Key (L_Key) is used by the local implementation to identify
+   scatter/gather entries in Work Requests.  L_Keys are not transmitted
+   on the wire; they are an implementation artifact for local buffer
+   management.
+
+6.3.  Deregistration
+
+   An MR is deregistered by sending an MR_DEREG message containing the
+   PD Handle and L_Key.  Outstanding Work Requests that reference the MR
+   MUST complete (with success or error) before the implementation
+   returns resources.  The implementation MUST NOT accept new operations
+   targeting a deregistered MR's R_Key.
+
+
+7.  Queue Pair Operations
+
+7.1.  Send/Receive
+
+   The two-sided SEND operation requires that the remote endpoint have
+   a posted Receive Work Request before the SEND arrives.  The Responder
+   places received data into the buffer specified by the matching Receive
+   Work Request.
+
+   SEND message payload:
+
+      Scatter/Gather List Length (16 bits): Number of SG entries.
+      Reserved (16 bits): MUST be zero.
+      SG Entry[] (repeated):
+         L_Key (32 bits): Local Key identifying the source buffer.
+         Offset (64 bits): Byte offset within the MR.
+         Length (32 bits): Bytes to send from this entry.
+
+   The total bytes across all SG entries is the SEND payload size.  If
+   the total exceeds the negotiated maximum message size, the
+   implementation MUST fragment the payload per Section 10.
+
+   Upon receipt, the Responder:
+
+   1.  Dequeues the earliest posted Receive Work Request.
+   2.  Copies (or references) the incoming data into the Receive buffer.
+   3.  Generates a CQE on the Receive CQ with status SUCCESS.
+   4.  Sends RECV_COMP to the Initiator so the Initiator's SQ entry may
+       be retired.
+
+   If no Receive Work Request is posted when the SEND arrives, the
+   Responder MUST send an ERROR with code ERR_RNR (Receiver Not Ready,
+   0x0010) and MUST NOT silently discard the data.
+
+7.2.  RDMA Write
+
+   RDMA Write is a one-sided operation.  The Responder's CPU is not
+   involved; the operation completes when the data has been written into
+   the Responder's registered MR.
+
+   WRITE message payload:
+
+      Remote R_Key (32 bits):  The R_Key authorizing access to the
+                                remote MR.
+      Reserved (32 bits):      MUST be zero.
+      Remote VA (64 bits):     Virtual (logical) address within the
+                                remote MR at which to begin writing.
+      Length (64 bits):        Total byte count of this Write.
+      SG Entry[] (repeated):
+         L_Key (32 bits): Local Key identifying the source buffer.
+         Offset (64 bits): Byte offset within the local MR.
+         SG Length (32 bits): Bytes from this local SG entry.
+
+   The Responder validates the R_Key and Remote VA, writes the payload
+   into its local MR, and sends WRITE_COMP.
+
+   The Initiator generates a CQE on its Send CQ upon receiving
+   WRITE_COMP.  If the Flags field of the WRITE message has bit 13 (S)
+   clear and the Responder supports completion coalescing, the Responder
+   MAY delay sending WRITE_COMP for up to 100 microseconds to coalesce
+   with subsequent WRITE_COMP messages.
+
+   The Responder MUST NOT generate a CQE on its own Receive CQ for an
+   RDMA Write unless the Initiator set the Signaled flag (bit 13 of
+   Flags); this is the defining property of one-sided semantics.
+
+7.3.  RDMA Read
+
+   RDMA Read is a one-sided pull operation.  The Initiator requests that
+   the Responder transmit a region of its memory back to the Initiator.
+
+   READ_REQ message payload:
+
+      Remote R_Key (32 bits):  The R_Key authorizing access to the
+                                remote MR.
+      Reserved (32 bits):      MUST be zero.
+      Remote VA (64 bits):     Starting virtual address in the remote MR.
+      Read Length (64 bits):   Number of bytes to read.
+      Local L_Key (32 bits):   L_Key of the local sink buffer.
+      Reserved (32 bits):      MUST be zero.
+      Local VA (64 bits):      Virtual address within the local sink MR.
+
+   The Responder validates the R_Key and Remote VA, then transmits one
+   or more READ_RESP messages carrying the requested data.
+
+   READ_RESP message payload:
+
+      Fragment Offset (64 bits): Byte offset of this fragment within
+                                  the total Read response.
+      Data (variable):           The data bytes for this fragment.
+
+   The Initiator reassembles READ_RESP fragments (if any) in Fragment
+   Offset order.  Upon receiving the final fragment (L flag set in the
+   header Flags field), the Initiator writes the assembled data into the
+   local sink buffer and generates a CQE.
+
+   The Responder does NOT generate a CQE for a serviced RDMA Read unless
+   configured to do so via implementation-local policy.
+
+7.4.  Atomic Operations
+
+   RDoWS supports two atomic operations: Compare-and-Swap (CAS) and
+   Fetch-and-Add (FAA).  Atomic operations are 64-bit, aligned to 8-byte
+   boundaries within the target MR.
+
+   ATOMIC_REQ message payload:
+
+      Remote R_Key (32 bits):  Must include REMOTE_ATOMIC access.
+      Atomic Type (8 bits):    0x01 = CAS, 0x02 = FAA.
+      Reserved (24 bits):      MUST be zero.
+      Remote VA (64 bits):     8-byte aligned address in the remote MR.
+      Operand1 (64 bits):      For CAS: compare value.
+                               For FAA: addend.
+      Operand2 (64 bits):      For CAS: swap value.
+                               For FAA: MUST be zero.
+
+   ATOMIC_RESP message payload:
+
+      Original Value (64 bits): Value at Remote VA before the operation.
+      Status (16 bits):         0x0000 = success.
+      Reserved (48 bits):       MUST be zero.
+
+   The Responder MUST perform the atomic operation as an indivisible
+   read-modify-write with respect to all other RDoWS atomic operations
+   on the same MR.  Atomicity with respect to non-RDoWS accessors of
+   the same memory (e.g., local threads) is implementation-defined.
+
+
+8.  Completion Queue
+
+   Each Queue Pair is associated with at least one Completion Queue.
+   An implementation MAY allow the Send CQ and Receive CQ to be the
+   same CQ instance.
+
+   A CQE contains the following fields:
+
+      WRID (64 bits):       The Work Request Identifier from the
+                             corresponding Work Request.
+      Status (16 bits):     0x0000 = SUCCESS.  See Section 11 for
+                             error codes.
+      Opcode (8 bits):      The operation type that completed.
+      Vendor Error (8 bits):Implementation-specific sub-code.
+      Byte Count (32 bits): Bytes transferred (meaningful for SEND
+                             and RDMA Read on the Initiator side).
+      QP Number (32 bits):  The logical QP identifier (Session ID).
+      Reserved (32 bits):   MUST be zero.
+
+   Applications poll or block on the CQ using the implementation's verb
+   API.  RDoWS does not mandate a CQ notification mechanism; implementors
+   are free to use callbacks, event loops, condition variables, or
+   io_uring-style polling rings.
+
+   CQ overflow (posting more Work Requests than CQ capacity) MUST result
+   in an ERR_CQ_OVERFLOW (0x0020) error returned synchronously when the
+   application attempts to post the Work Request, not asynchronously.
+
+
+9.  Flow Control
+
+   RDoWS uses a credit-based flow control mechanism to prevent the Send
+   Queue from overwhelming the remote Receive Queue.
+
+   During the CONNECT handshake, each endpoint advertises an Initial
+   Credit Count (ICC) in the CONNECT payload.  The ICC represents the
+   number of SEND Work Requests that may be outstanding before the
+   Initiator must pause.
+
+   Credits are replenished by CREDIT_UPDATE messages:
+
+      Credit Increment (32 bits):  Number of additional credits granted.
+      Reserved (32 bits):          MUST be zero.
+
+   The Initiator decrements its local credit counter by 1 for each SEND
+   posted.  When the counter reaches zero, the Initiator MUST NOT post
+   additional SEND Work Requests until credits are replenished.  RDMA
+   Write, RDMA Read, and Atomic operations are NOT subject to credit-
+   based flow control; they are instead bounded by the remote MR size
+   and access flags.
+
+   The Responder SHOULD issue CREDIT_UPDATE after processing every 1/4
+   of its ICC worth of incoming SENDs.  Implementations MAY batch credit
+   returns.  A Responder MUST NOT withhold all credits indefinitely;
+   doing so constitutes a deadlock.
+
+
+10.  Fragmentation and Reassembly
+
+   When a payload exceeds the negotiated maximum message size (conveyed
+   in the CONNECT handshake as Max_Message_Size), the sender MUST
+   fragment the payload across multiple WebSocket binary messages, each
+   carrying a complete RDoWS header.
+
+   Fragmented sequences are identified by the Fragment (F) flag in the
+   header Flags field.  The Fragment Sequence (FS) number is derived
+   from the Sequence Number field of the first fragment; subsequent
+   fragments carry incrementing Sequence Numbers and MUST NOT be
+   interleaved with fragments from a different logical message.
+
+   Fragmentation rules:
+
+   o  The first fragment: F=1, L=0.
+   o  Intermediate fragments: F=1, L=0.
+   o  The final fragment: F=1, L=1.
+   o  An unfragmented message: F=0, L=0.
+
+   Setting F=0 and L=1 simultaneously is a protocol error.  The
+   receiver MUST send an ERROR and SHOULD close the connection.
+
+   The receiver assembles fragments in Sequence Number order.  Receipt
+   of a fragment with a sequence gap before the reassembly buffer is
+   complete MUST result in ERROR code ERR_SEQ_GAP (0x0030).
+
+   Implementations MUST support reassembly buffers of at least 64 MiB.
+
+
+11.  Error Handling
+
+   When an endpoint detects a protocol or operational error, it MUST
+   send an ERROR message before closing the connection unless the
+   connection is already in a state where sending is not possible.
+
+   ERROR message payload:
+
+      Error Code (16 bits):   See table below.
+      Reserved (16 bits):     MUST be zero.
+      Failing Sequence (32 bits): Sequence Number of the message that
+                               triggered the error, or 0 if not
+                               applicable.
+      Description Length (16 bits): Length of the optional human-
+                               readable description string (UTF-8).
+      Description (variable): Optional diagnostic string.
+
+   Error Codes:
+
+   +----------+--------------------+----------------------------------+
+   |   Code   | Name               | Meaning                          |
+   +----------+--------------------+----------------------------------+
+   |  0x0000  | SUCCESS            | No error (used in CQEs)          |
+   |  0x0001  | ERR_PROTO_VERSION  | Unsupported protocol version     |
+   |  0x0002  | ERR_UNKNOWN_OPCODE | Unknown or reserved opcode       |
+   |  0x0003  | ERR_INVALID_PD     | Invalid Protection Domain handle |
+   |  0x0004  | ERR_INVALID_LKEY   | Invalid or expired Local Key     |
+   |  0x0005  | ERR_INVALID_MKEY   | Invalid or expired Remote Key    |
+   |  0x0006  | ERR_ACCESS_DENIED  | Access flags do not permit op    |
+   |  0x0007  | ERR_BOUNDS         | VA+length exceeds MR bounds      |
+   |  0x0008  | ERR_ALIGNMENT      | Atomic VA not 8-byte aligned     |
+   |  0x0009  | ERR_PAYLOAD_SIZE   | Payload exceeds Max_Message_Size |
+   |  0x0010  | ERR_RNR            | Receiver Not Ready               |
+   |  0x0020  | ERR_CQ_OVERFLOW    | Completion Queue full            |
+   |  0x0030  | ERR_SEQ_GAP        | Missing fragment in sequence     |
+   |  0x0040  | ERR_TIMEOUT        | Operation timed out              |
+   |  0xFFFF  | ERR_INTERNAL       | Unspecified internal error       |
+   +----------+--------------------+----------------------------------+
+
+   After sending an ERROR message, the sender SHOULD close the WebSocket
+   connection with Close code 1011 (Internal Server Error) unless the
+   error is recoverable.  Recoverable errors (ERR_RNR, ERR_TIMEOUT) do
+   not mandate connection closure.
+
+   An endpoint that receives an ERROR message for a recoverable error
+   SHOULD complete any outstanding READ_RESP fragment reassembly then
+   generate CQEs with the appropriate error status for affected Work
+   Requests.
+
+
+12.  Security Considerations
+
+12.1.  Transport Security
+
+   All RDoWS connections MUST use TLS 1.3 or later (RFC 8446).  Use of
+   unencrypted WebSocket (ws://) for RDoWS is explicitly PROHIBITED.
+   Endpoints MUST verify peer certificates unless both endpoints are
+   co-located and the loopback interface is used, in which case mutual
+   TLS authentication remains RECOMMENDED.
+
+   WebSocket origin checks (the Origin header) SHOULD be performed by
+   server implementations to prevent cross-origin access from browser
+   contexts.
+
+12.2.  Memory Key Protection
+
+   The security of one-sided RDMA operations depends entirely on the
+   unguessability of Remote Keys.  Implementors MUST:
+
+   o  Generate R_Keys using a cryptographically secure pseudorandom
+      number generator (CSPRNG) as defined in RFC 4086.
+
+   o  Immediately invalidate all R_Keys belonging to a session upon
+      session teardown, whether orderly (DISCONNECT) or abrupt (TCP RST,
+      TLS alert).
+
+   o  Not reuse R_Key values within a session, even after MR
+      deregistration.  Implementations MUST maintain a bloom filter or
+      equivalent mechanism to detect reuse for the lifetime of the
+      session.
+
+   o  Rate-limit MR_REG requests to mitigate R_Key oracle attacks.  A
+      RECOMMENDED limit is no more than 1000 MR_REG operations per
+      second per session.
+
+12.3.  Denial-of-Service Considerations
+
+   An RDoWS server MUST enforce limits on:
+
+   o  Maximum number of concurrent sessions per client IP address.
+   o  Maximum number of registered Memory Regions per session.
+   o  Maximum total registered memory per session.
+   o  Maximum CQ depth per QP.
+   o  Maximum outstanding RDMA Read requests (to bound server-side
+      read amplification).
+
+   Recommended defaults: 256 sessions/IP, 4096 MRs/session,
+   32 GiB total/session, 65536 CQE depth, 128 outstanding reads.
+
+   Implementations MUST NOT allow a remote Initiator to cause the server
+   to allocate unbounded memory by issuing large numbers of MR_REG or
+   READ_REQ messages.
+
+
+13.  IANA Considerations
+
+   This document requests the following IANA actions:
+
+   1.  Register the WebSocket subprotocol "rdows.v1" in the WebSocket
+       Subprotocol Name Registry (Section 11.5 of RFC 6455) with a
+       reference to this RFC.
+
+   2.  Create a new registry "RDoWS Opcodes" under the "WebSocket" IANA
+       registry group, with the following registration policy:
+         0x01-0x0F:   Standards Action
+         0x10-0xEF:   Specification Required
+         0xF0-0xFF:   Standards Action
+       Initial contents are as listed in Section 5.2 of this document.
+
+   3.  Create a new registry "RDoWS Error Codes" with registration
+       policy Specification Required.  Initial contents are as listed in
+       Section 11 of this document.
+
+
+14.  References
+
+14.1.  Normative References
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119, March 1997.
+
+   [RFC4086]  Eastlake 3rd, D., Schiller, J., and S. Crocker,
+              "Randomness Requirements for Security", BCP 106,
+              RFC 4086, June 2005.
+
+   [RFC6455]  Fette, I. and A. Melnikov, "The WebSocket Protocol",
+              RFC 6455, December 2011.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in
+              RFC 2119 Key Words", BCP 14, RFC 8174, May 2017.
+
+   [RFC8446]  Rescorla, E., "The Transport Layer Security (TLS)
+              Protocol Version 1.3", RFC 8446, August 2018.
+
+14.2.  Informative References
+
+   [RFC7692]  Yoshino, T., "WebSocket Per-Message Compression",
+              RFC 7692, December 2015.
+
+   [IBTA]     InfiniBand Trade Association, "InfiniBand Architecture
+              Specification", Release 1.7, 2023.
+
+   [RFC5040]  Recio, R., et al., "A Remote Direct Memory Access
+              Protocol Specification", RFC 5040, October 2007.
+
+   [RFC5041]  Shah, H., et al., "Direct Data Placement over Reliable
+              Transports", RFC 5041, October 2007.
+
+   [RFC5042]  Pinkerton, J. and E. Deleganes, "Direct Data Placement
+              Protocol (DDP) / Remote Direct Memory Access Protocol
+              (RDMAP) Security", RFC 5042, October 2007.
+
+
+Acknowledgements
+
+   The author thanks the RDMA working group alumni whose work on iWARP
+   (RFCs 5040-5044) provided both a technical foundation and a
+   cautionary tale about the operational complexity of RDMA over
+   commodity transports.  Thanks also to the WebTransport and WebCodecs
+   working groups whose work on browser-accessible low-latency transports
+   highlighted the demand for the problem space this document addresses.
+
+
+Author's Address
+
+   C. Svensson
+   Individual Submission
+
+   Email: author@example.com

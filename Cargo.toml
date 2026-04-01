@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/rdows-core",
+    "crates/rdows-server",
+    "crates/rdows-client",
+]
+resolver = "2"
