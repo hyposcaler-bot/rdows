@@ -13,13 +13,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "wss://localhost:9443/rdows".to_string());
     let cert_path = get_arg(&args, "--cert");
 
+    let mode = get_arg(&args, "--mode").unwrap_or_else(|| "write".to_string());
     let tls_config = build_tls_config(cert_path.as_deref())?;
 
     println!("Connecting to {url}...");
     let mut conn = RdowsConnection::connect(&url, tls_config).await?;
     println!("Session established (id: 0x{:08X})", conn.session_id());
 
-    // Register remote MR with write + read access
+    match mode.as_str() {
+        "write" => demo_write(&mut conn).await?,
+        "atomic" => demo_atomic(&mut conn).await?,
+        other => {
+            eprintln!("unknown mode: {other} (valid: write, atomic)");
+            std::process::exit(1);
+        }
+    }
+
+    conn.disconnect().await?;
+    println!("Disconnected.");
+    Ok(())
+}
+
+async fn demo_write(conn: &mut RdowsConnection) -> Result<(), Box<dyn std::error::Error>> {
     let remote_mr = conn
         .reg_mr(AccessFlags::REMOTE_WRITE | AccessFlags::REMOTE_READ, 4096)
         .await?;
@@ -28,10 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         remote_mr.rkey.0
     );
 
-    // Register local MR for source/sink
     let local_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 4096).await?;
 
-    // RDMA Write
     let payload = b"RDMA over WebSockets: because InfiniBand was too easy.";
     conn.write_local_mr(local_mr.lkey, 0, payload)?;
 
@@ -54,7 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cqes.first().map(|c| c.status).unwrap_or(0xFFFF)
     );
 
-    // RDMA Read
     let read_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 4096).await?;
 
     println!("RDMA Read: {} bytes <- remote VA 0x0000", payload.len());
@@ -70,9 +82,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Data: {:?}", std::str::from_utf8(&read_back)?);
     assert_eq!(&read_back, payload);
     println!("Verification passed.");
+    Ok(())
+}
 
-    conn.disconnect().await?;
-    println!("Disconnected.");
+async fn demo_atomic(conn: &mut RdowsConnection) -> Result<(), Box<dyn std::error::Error>> {
+    let remote_mr = conn
+        .reg_mr(
+            AccessFlags::REMOTE_ATOMIC | AccessFlags::REMOTE_READ | AccessFlags::REMOTE_WRITE,
+            64,
+        )
+        .await?;
+    println!(
+        "Remote MR registered: R_Key=0x{:08X}, size=64",
+        remote_mr.rkey.0
+    );
+
+    let local_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 64).await?;
+
+    // Initialize counter to 0 via RDMA Write
+    conn.write_local_mr(local_mr.lkey, 0, &0u64.to_be_bytes())?;
+    conn.rdma_write(
+        0,
+        remote_mr.rkey,
+        0,
+        &[ScatterGatherEntry {
+            lkey: local_mr.lkey,
+            offset: 0,
+            length: 8,
+        }],
+    )
+    .await?;
+    conn.poll_cq(10);
+    println!("Counter initialized to 0");
+
+    // FAA +1 five times
+    for i in 1..=5u64 {
+        let prev = conn.atomic_faa(i, remote_mr.rkey, 0, 1).await?;
+        conn.poll_cq(10);
+        println!("FAA #{i}: previous value = {prev}");
+    }
+
+    // Read back final value
+    let read_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 64).await?;
+    conn.rdma_read(100, remote_mr.rkey, 0, 8, read_mr.lkey, 0).await?;
+    conn.poll_cq(10);
+    let final_bytes = conn.read_local_mr(read_mr.lkey, 0, 8)?;
+    let final_value = u64::from_be_bytes(final_bytes.try_into().unwrap());
+    println!("Final counter value: {final_value}");
+    assert_eq!(final_value, 5);
+    println!("Verification passed.");
     Ok(())
 }
 

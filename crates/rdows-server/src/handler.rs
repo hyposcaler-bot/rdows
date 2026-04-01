@@ -1,7 +1,8 @@
 use rdows_core::error::{ErrorCode, RdowsError};
 use rdows_core::memory::AccessFlags;
 use rdows_core::message::{
-    MrDeregAckPayload, MrRegAckPayload, ReadRespPayload, RdowsMessage,
+    AtomicRespPayload, MrDeregAckPayload, MrRegAckPayload, ReadRespPayload, RdowsMessage,
+    ATOMIC_TYPE_CAS, ATOMIC_TYPE_FAA,
 };
 use rdows_core::opcode::Opcode;
 
@@ -36,15 +37,8 @@ pub async fn dispatch(
         RdowsMessage::ReadReq(header, payload) => {
             handle_read_req(session, header, payload, sink).await
         }
-        RdowsMessage::AtomicReq(..) | RdowsMessage::AtomicResp(..) => {
-            send_error(
-                session,
-                sink,
-                ErrorCode::ErrUnknownOpcode,
-                seq,
-                "atomic operations not supported",
-            )
-            .await
+        RdowsMessage::AtomicReq(header, payload) => {
+            handle_atomic_req(session, header, payload, sink).await
         }
         RdowsMessage::Ack(_) => {
             // Accept and ignore
@@ -254,4 +248,40 @@ async fn handle_read_req(
         data,
     };
     send_message(sink, &RdowsMessage::ReadResp(resp_header, resp_payload)).await
+}
+
+async fn handle_atomic_req(
+    session: &mut Session,
+    header: rdows_core::frame::RdowsHeader,
+    payload: rdows_core::message::AtomicReqPayload,
+    sink: &mut WsSink,
+) -> Result<(), RdowsError> {
+    if payload.atomic_type != ATOMIC_TYPE_CAS && payload.atomic_type != ATOMIC_TYPE_FAA {
+        return send_error(
+            session,
+            sink,
+            ErrorCode::ErrUnknownOpcode,
+            header.sequence,
+            "invalid atomic type",
+        )
+        .await;
+    }
+
+    match session.memory_store.atomic_op(
+        payload.rkey,
+        payload.remote_va,
+        payload.atomic_type,
+        payload.operand1,
+        payload.operand2,
+    ) {
+        Ok(original) => {
+            let resp_header = session.next_header(Opcode::AtomicResp, header.wrid);
+            let resp_payload = AtomicRespPayload {
+                original_value: original,
+                status: 0,
+            };
+            send_message(sink, &RdowsMessage::AtomicResp(resp_header, resp_payload)).await
+        }
+        Err(code) => send_error(session, sink, code, header.sequence, "").await,
+    }
 }

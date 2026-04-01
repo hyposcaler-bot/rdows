@@ -3,8 +3,8 @@ use bytes::Bytes;
 use rdows_core::error::RdowsError;
 use rdows_core::memory::{AccessFlags, LKey, RKey};
 use rdows_core::message::{
-    DataPayload, MrDeregPayload, MrRegPayload, ReadReqPayload, SendPayload, WritePayload,
-    RdowsMessage,
+    AtomicReqPayload, DataPayload, MrDeregPayload, MrRegPayload, ReadReqPayload, RdowsMessage,
+    SendPayload, WritePayload, ATOMIC_TYPE_CAS, ATOMIC_TYPE_FAA,
 };
 use rdows_core::opcode::Opcode;
 use rdows_core::queue::{CompletionQueueEntry, ScatterGatherEntry, WorkRequestId};
@@ -305,6 +305,87 @@ impl RdowsConnection {
             }
             other => Err(RdowsError::UnexpectedMessage {
                 expected: "READ_RESP",
+                got: other.header().opcode,
+            }),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // One-sided: Atomic CAS / FAA
+    // -----------------------------------------------------------------------
+
+    pub async fn atomic_cas(
+        &mut self,
+        wrid: u64,
+        rkey: RKey,
+        remote_va: u64,
+        compare: u64,
+        swap: u64,
+    ) -> Result<u64, RdowsError> {
+        self.post_atomic(wrid, rkey, remote_va, ATOMIC_TYPE_CAS, compare, swap)
+            .await
+    }
+
+    pub async fn atomic_faa(
+        &mut self,
+        wrid: u64,
+        rkey: RKey,
+        remote_va: u64,
+        addend: u64,
+    ) -> Result<u64, RdowsError> {
+        self.post_atomic(wrid, rkey, remote_va, ATOMIC_TYPE_FAA, addend, 0)
+            .await
+    }
+
+    async fn post_atomic(
+        &mut self,
+        wrid: u64,
+        rkey: RKey,
+        remote_va: u64,
+        atomic_type: u8,
+        operand1: u64,
+        operand2: u64,
+    ) -> Result<u64, RdowsError> {
+        let header = self.next_header(Opcode::AtomicReq, wrid);
+        let payload = AtomicReqPayload {
+            rkey,
+            atomic_type,
+            remote_va,
+            operand1,
+            operand2,
+        };
+        connection::send_message(
+            &mut self.sink,
+            &RdowsMessage::AtomicReq(header, payload),
+        )
+        .await?;
+
+        let resp = connection::recv_message(&mut self.stream).await?;
+        match resp {
+            RdowsMessage::AtomicResp(_, resp_payload) => {
+                self.cq.push(CompletionQueueEntry {
+                    wrid: WorkRequestId(wrid),
+                    status: 0,
+                    opcode: Opcode::AtomicReq,
+                    vendor_error: 0,
+                    byte_count: 8,
+                    qp_number: self.session_id,
+                });
+                Ok(resp_payload.original_value)
+            }
+            RdowsMessage::Error(_, err) => {
+                self.cq.push(CompletionQueueEntry {
+                    wrid: WorkRequestId(wrid),
+                    status: err.error_code.into(),
+                    opcode: Opcode::AtomicReq,
+                    vendor_error: 0,
+                    byte_count: 0,
+                    qp_number: self.session_id,
+                });
+                Err(RdowsError::Protocol(err.error_code))
+            }
+            other => Err(RdowsError::UnexpectedMessage {
+                expected: "ATOMIC_RESP",
                 got: other.header().opcode,
             }),
         }

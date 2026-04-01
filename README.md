@@ -42,7 +42,8 @@ The implementation consists of three crates:
 - **`rdows-server`** — TLS-enabled WebSocket server with session state
   machine, memory region store, and opcode dispatch.
 - **`rdows-client`** — Client library exposing an ibverbs-compatible API:
-  `reg_mr`, `dereg_mr`, `post_send`, `rdma_write`, `rdma_read`, `poll_cq`.
+  `reg_mr`, `dereg_mr`, `post_send`, `rdma_write`, `rdma_read`,
+  `atomic_cas`, `atomic_faa`, `poll_cq`.
 
 ## Quick Start (Single Host)
 
@@ -69,6 +70,9 @@ cargo run -p rdows-client --example one_sided_write
 
 # Random-access RDMA Read
 cargo run -p rdows-client --example one_sided_read
+
+# Atomic FAA counter
+cargo run -p rdows-client --example atomic_counter
 ```
 
 ## Two-Host Deployment
@@ -93,12 +97,19 @@ cargo run -p rdows-server -- --bind 0.0.0.0:9443 --cert server.crt --key server.
 
 ```sh
 scp SERVER_IP:~/path/to/server.crt .
+
+# RDMA Write + Read (default)
 cargo run -p rdows-client -- --url wss://SERVER_IP:9443/rdows --cert server.crt
+
+# Atomic FAA counter
+cargo run -p rdows-client -- --url wss://SERVER_IP:9443/rdows --cert server.crt --mode atomic
 ```
 
-The client performs an RDMA Write into the server's memory region, reads it
-back, and verifies the round-trip. If `--cert` is omitted, the system trust
-store is used (suitable for CA-signed certificates).
+The default `write` mode performs an RDMA Write into the server's memory
+region, reads it back, and verifies the round-trip. The `atomic` mode
+initializes a remote counter to 0, increments it five times with
+Fetch-and-Add, and verifies the final value. If `--cert` is omitted, the
+system trust store is used (suitable for CA-signed certificates).
 
 
 ## Example 
@@ -163,6 +174,12 @@ conn.rdma_write(wrid, mr.rkey, remote_va, &sg_list).await?;
 // RDMA Read from remote memory
 conn.rdma_read(wrid, mr.rkey, remote_va, len, local_lkey, local_va).await?;
 
+// Atomic Compare-and-Swap (returns original value)
+let original = conn.atomic_cas(wrid, mr.rkey, remote_va, compare, swap).await?;
+
+// Atomic Fetch-and-Add (returns original value)
+let original = conn.atomic_faa(wrid, mr.rkey, remote_va, addend).await?;
+
 // Poll completions
 let cqes = conn.poll_cq(16);
 
@@ -185,6 +202,7 @@ The protocol supports:
 | Two-sided | SEND, SEND_DATA, RECV_COMP | Posted receive model |
 | RDMA Write | WRITE, WRITE_DATA, WRITE_COMP | One-sided write |
 | RDMA Read | READ_REQ, READ_RESP | One-sided read |
+| Atomic | ATOMIC_REQ, ATOMIC_RESP | 64-bit CAS and Fetch-and-Add |
 | Control | ACK, CREDIT_UPDATE, ERROR | Flow and error control |
 
 Remote Keys (R_Keys) are generated using a cryptographically secure PRNG

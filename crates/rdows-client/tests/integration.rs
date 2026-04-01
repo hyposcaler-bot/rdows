@@ -350,3 +350,204 @@ async fn rdma_read_invalid_rkey() {
 
     conn.disconnect().await.unwrap();
 }
+
+// ===========================================================================
+// Phase 7: Atomic CAS / FAA
+// ===========================================================================
+
+/// Helper: write a big-endian u64 into remote MR at the given offset via RDMA Write.
+async fn write_remote_u64(
+    conn: &mut RdowsConnection,
+    rkey: rdows_client::rdows_core::memory::RKey,
+    offset: u64,
+    value: u64,
+) {
+    let local_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 8).await.unwrap();
+    conn.write_local_mr(local_mr.lkey, 0, &value.to_be_bytes())
+        .unwrap();
+    conn.rdma_write(
+        0,
+        rkey,
+        offset,
+        &[ScatterGatherEntry {
+            lkey: local_mr.lkey,
+            offset: 0,
+            length: 8,
+        }],
+    )
+    .await
+    .unwrap();
+    conn.poll_cq(10);
+}
+
+/// Helper: read a big-endian u64 from remote MR at the given offset via RDMA Read.
+async fn read_remote_u64(
+    conn: &mut RdowsConnection,
+    rkey: rdows_client::rdows_core::memory::RKey,
+    offset: u64,
+) -> u64 {
+    let local_mr = conn.reg_mr(AccessFlags::LOCAL_WRITE, 8).await.unwrap();
+    conn.rdma_read(0, rkey, offset, 8, local_mr.lkey, 0)
+        .await
+        .unwrap();
+    conn.poll_cq(10);
+    let data = conn.read_local_mr(local_mr.lkey, 0, 8).unwrap();
+    u64::from_be_bytes(data.try_into().unwrap())
+}
+
+#[tokio::test]
+async fn atomic_cas_success() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(
+            AccessFlags::REMOTE_ATOMIC | AccessFlags::REMOTE_WRITE | AccessFlags::REMOTE_READ,
+            64,
+        )
+        .await
+        .unwrap();
+
+    write_remote_u64(&mut conn, mr.rkey, 0, 0xDEADBEEF).await;
+
+    let original = conn
+        .atomic_cas(1, mr.rkey, 0, 0xDEADBEEF, 0xCAFEBABE)
+        .await
+        .unwrap();
+    assert_eq!(original, 0xDEADBEEF);
+
+    let cqes = conn.poll_cq(10);
+    assert_eq!(cqes.len(), 1);
+    assert_eq!(cqes[0].wrid.0, 1);
+    assert_eq!(cqes[0].status, 0);
+    assert_eq!(cqes[0].byte_count, 8);
+
+    let readback = read_remote_u64(&mut conn, mr.rkey, 0).await;
+    assert_eq!(readback, 0xCAFEBABE);
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_cas_no_match() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(
+            AccessFlags::REMOTE_ATOMIC | AccessFlags::REMOTE_WRITE | AccessFlags::REMOTE_READ,
+            64,
+        )
+        .await
+        .unwrap();
+
+    write_remote_u64(&mut conn, mr.rkey, 0, 0xDEADBEEF).await;
+
+    let original = conn
+        .atomic_cas(1, mr.rkey, 0, 0x1111, 0xCAFE)
+        .await
+        .unwrap();
+    assert_eq!(original, 0xDEADBEEF);
+
+    let readback = read_remote_u64(&mut conn, mr.rkey, 0).await;
+    assert_eq!(readback, 0xDEADBEEF); // unchanged
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_faa() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(
+            AccessFlags::REMOTE_ATOMIC | AccessFlags::REMOTE_WRITE | AccessFlags::REMOTE_READ,
+            64,
+        )
+        .await
+        .unwrap();
+
+    write_remote_u64(&mut conn, mr.rkey, 0, 100).await;
+
+    let original = conn.atomic_faa(1, mr.rkey, 0, 50).await.unwrap();
+    assert_eq!(original, 100);
+
+    let readback = read_remote_u64(&mut conn, mr.rkey, 0).await;
+    assert_eq!(readback, 150);
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_alignment_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(AccessFlags::REMOTE_ATOMIC, 64)
+        .await
+        .unwrap();
+
+    let err = conn.atomic_cas(1, mr.rkey, 3, 0, 0).await;
+    assert!(err.is_err());
+    match err.unwrap_err() {
+        rdows_client::rdows_core::error::RdowsError::Protocol(code) => {
+            assert_eq!(code, ErrorCode::ErrAlignment);
+        }
+        other => panic!("expected ErrAlignment, got: {other}"),
+    }
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_access_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(AccessFlags::REMOTE_WRITE, 64)
+        .await
+        .unwrap();
+
+    let err = conn.atomic_cas(1, mr.rkey, 0, 0, 0).await;
+    assert!(err.is_err());
+    match err.unwrap_err() {
+        rdows_client::rdows_core::error::RdowsError::Protocol(code) => {
+            assert_eq!(code, ErrorCode::ErrAccessDenied);
+        }
+        other => panic!("expected ErrAccessDenied, got: {other}"),
+    }
+
+    conn.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_bounds_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mr = conn
+        .reg_mr(AccessFlags::REMOTE_ATOMIC, 16)
+        .await
+        .unwrap();
+
+    // Offset 16 needs bytes 16..24, but MR is only 16 bytes
+    let err = conn.atomic_cas(1, mr.rkey, 16, 0, 0).await;
+    assert!(err.is_err());
+    match err.unwrap_err() {
+        rdows_client::rdows_core::error::RdowsError::Protocol(code) => {
+            assert_eq!(code, ErrorCode::ErrBounds);
+        }
+        other => panic!("expected ErrBounds, got: {other}"),
+    }
+
+    conn.disconnect().await.unwrap();
+}
