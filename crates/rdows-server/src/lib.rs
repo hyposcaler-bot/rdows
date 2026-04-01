@@ -101,9 +101,11 @@ pub fn build_server_tls_config(
     let key = rustls_pemfile::private_key(&mut &*key_pem)?
         .ok_or("no private key found")?;
 
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
+
+    config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     Ok(Arc::new(config))
 }

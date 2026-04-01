@@ -79,19 +79,21 @@ async fn start_embedded_server() -> (std::net::SocketAddr, rustls::ClientConfig)
     let cert_der = cert.cert.der().clone();
     let key_der = cert.key_pair.serialize_der();
 
-    let server_config = rustls::ServerConfig::builder()
+    let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
             vec![cert_der.clone()],
             rustls::pki_types::PrivateKeyDer::Pkcs8(key_der.into()),
         )
         .unwrap();
+    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let client_config = rustls::ClientConfig::builder()
+    let mut client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    client_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

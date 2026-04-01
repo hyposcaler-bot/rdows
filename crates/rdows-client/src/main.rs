@@ -1,4 +1,5 @@
 use std::env;
+use std::sync::Arc;
 
 use rdows_client::rdows_core::error::ErrorCode;
 use rdows_client::rdows_core::memory::AccessFlags;
@@ -224,9 +225,13 @@ fn build_tls_config(cert_path: Option<&str>) -> Result<rustls::ClientConfig, Box
         println!("Using system trust store ({} roots)", root_store.len());
     }
 
-    Ok(rustls::ClientConfig::builder()
+    let mut config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
-        .with_no_client_auth())
+        .with_no_client_auth();
+
+    config.key_log = Arc::new(rustls::KeyLogFile::new());
+
+    Ok(config)
 }
 
 fn get_arg(args: &[String], flag: &str) -> Option<String> {
