@@ -48,6 +48,14 @@ The implementation consists of four crates:
   against a 64 KiB memory region organized as a hash table. Embeds its own
   server for single-host use, or connects to a remote server.
 
+## Prerequisites
+
+Install Rust:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 ## Quick Start (Single Host)
 
 Every example and the KV store demo embed their own RDoWS server with
@@ -89,7 +97,7 @@ and an operation log.
 ## Two-Host Deployment
 
 RDoWS runs across separate hosts over the network. Both hosts need Rust
-installed (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
+installed (see [Prerequisites](#prerequisites)).
 
 ### Server Setup
 
