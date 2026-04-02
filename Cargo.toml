@@ -3,5 +3,6 @@ members = [
     "crates/rdows-core",
     "crates/rdows-server",
     "crates/rdows-client",
+    "crates/rdows-kv",
 ]
 resolver = "2"

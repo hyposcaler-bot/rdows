@@ -13,24 +13,24 @@ Common plugin directories:
 - macOS: `~/.local/lib/wireshark/plugins/`
 - Windows: `%APPDATA%\Wireshark\plugins\`
 
-### 2. Generate test certificates
+### 2. Capture with TLS key logging
+
+Set `SSLKEYLOGFILE` to capture session keys for Wireshark decryption. The
+examples embed their own server with ephemeral certs, so no cert setup is
+needed:
 
 ```bash
-cd crates/rdows-server && ./gen-certs.sh
+SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-client --example one_sided_write
 ```
 
-Or use the examples which generate ephemeral certs via `rcgen`.
-
-### 3. Capture with TLS key logging
-
-Set `SSLKEYLOGFILE` on **both** client and server to see traffic in both directions:
+For two-host captures, set `SSLKEYLOGFILE` on **both** sides:
 
 ```bash
 # Terminal 1 — server
 SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-server -- --cert server.crt --key server.key
 
 # Terminal 2 — client
-SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-client -- --cert server.crt
+SSLKEYLOGFILE=/tmp/rdows-keys.log cargo run -p rdows-client -- --url wss://SERVER_IP:9443/rdows --cert server.crt
 ```
 
 ### 4. Configure Wireshark TLS decryption

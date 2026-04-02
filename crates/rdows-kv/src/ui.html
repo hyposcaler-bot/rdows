@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RDoWS Key-Value Store</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  padding: 20px;
+  min-height: 100vh;
+}
+h1 { color: #00d4aa; font-size: 1.6em; }
+.subtitle { color: #888; font-size: 0.85em; margin-bottom: 8px; }
+.stats { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.8em; color: #6a9fb5; margin-bottom: 20px; }
+.stats span { margin-right: 18px; }
+
+.panel {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.panel-title { font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+.input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+input[type="text"] {
+  background: #0a0a1a;
+  border: 1px solid #0f3460;
+  color: #e0e0e0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.9em;
+  outline: none;
+}
+input[type="text"]:focus { border-color: #00d4aa; }
+input[type="text"]::placeholder { color: #555; }
+#key-input { width: 200px; }
+#value-input { width: 320px; }
+
+button {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: opacity 0.15s;
+}
+button:hover { opacity: 0.85; }
+.btn-put { background: #00d4aa; color: #0a0a1a; }
+.btn-get { background: #4a9eff; color: #0a0a1a; }
+.btn-del { background: #e74c3c; color: #fff; }
+
+.error-msg { color: #e74c3c; font-size: 0.8em; margin-top: 6px; }
+
+.result-content {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  color: #b0b0b0;
+  min-height: 20px;
+}
+.result-content .op-write { color: #00d4aa; }
+.result-content .op-read { color: #4a9eff; }
+.result-content .op-error { color: #e74c3c; }
+
+.grid-container {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+}
+.slot {
+  background: #0a0a1a;
+  border: 1px solid #1a2a4a;
+  border-radius: 3px;
+  padding: 6px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.7em;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.slot:hover { border-color: #4a9eff; }
+.slot .slot-idx { color: #555; }
+.slot .slot-key { color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot.occupied { background: #0a2a1a; border-color: #00d4aa44; }
+.slot.occupied .slot-idx { color: #00d4aa88; }
+.slot.flash {
+  animation: slot-flash 1s ease-out;
+}
+@keyframes slot-flash {
+  0% { background: #00d4aa44; border-color: #00d4aa; }
+  100% { background: inherit; border-color: inherit; }
+}
+.slot.flash-read {
+  animation: slot-flash-read 1s ease-out;
+}
+@keyframes slot-flash-read {
+  0% { background: #4a9eff44; border-color: #4a9eff; }
+  100% { background: inherit; border-color: inherit; }
+}
+.slot.flash-delete {
+  animation: slot-flash-delete 1s ease-out;
+}
+@keyframes slot-flash-delete {
+  0% { background: #e74c3c44; border-color: #e74c3c; }
+  100% { background: inherit; border-color: inherit; }
+}
+
+.hex-view {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.8em;
+  color: #6a9fb5;
+  white-space: pre;
+  overflow-x: auto;
+  min-height: 20px;
+}
+
+.log-entries {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.78em;
+  max-height: 200px;
+  overflow-y: auto;
+  color: #888;
+}
+.log-entries div { padding: 2px 0; border-bottom: 1px solid #0f3460; }
+.log-entries .log-write { color: #00d4aa; }
+.log-entries .log-read { color: #4a9eff; }
+.log-entries .log-error { color: #e74c3c; }
+
+.slot-detail {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.82em;
+  color: #b0b0b0;
+  margin-top: 10px;
+  padding: 10px;
+  background: #0a0a1a;
+  border-radius: 4px;
+  display: none;
+}
+.slot-detail.visible { display: block; }
+</style>
+</head>
+<body>
+
+<h1>RDoWS Key-Value Store</h1>
+<div class="subtitle">GET/PUT via RDMA Read/Write over WebSocket</div>
+<div class="stats" id="stats">Connecting...</div>
+
+<div class="panel">
+  <div class="panel-title">Operations</div>
+  <div class="input-row">
+    <input type="text" id="key-input" placeholder="key" maxlength="255">
+    <input type="text" id="value-input" placeholder="value (for PUT)" maxlength="764">
+    <button class="btn-put" onclick="doPut()">PUT</button>
+    <button class="btn-get" onclick="doGet()">GET</button>
+    <button class="btn-del" onclick="doDelete()">DELETE</button>
+  </div>
+  <div class="error-msg" id="error-msg"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Last Operation</div>
+  <div class="result-content" id="result">No operations yet.</div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Memory Region — 64 Slots × 1024 Bytes (64 KiB)</div>
+  <div class="grid-container" id="grid"></div>
+  <div class="slot-detail" id="slot-detail"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Hex View</div>
+  <div class="hex-view" id="hex-view">No slot selected.</div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Operation Log</div>
+  <div class="log-entries" id="log"></div>
+</div>
+
+<script>
+let slots = [];
+let lastFlashSlot = -1;
+let lastFlashClass = '';
+
+function ts() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(n => String(n).padStart(2, '0')).join(':');
+}
+
+function addLog(msg, cls) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = cls || '';
+  div.textContent = '[' + ts() + '] ' + msg;
+  log.prepend(div);
+  while (log.children.length > 100) log.removeChild(log.lastChild);
+}
+
+function showError(msg) {
+  document.getElementById('error-msg').textContent = msg;
+  setTimeout(() => document.getElementById('error-msg').textContent = '', 4000);
+}
+
+function renderResult(data, cls) {
+  const el = document.getElementById('result');
+  const lines = [];
+  lines.push(data.operation + ' → slot ' + data.slot + ' @ VA ' + data.offset + ' (' + data.bytes + ' bytes)');
+  if (data.key) lines.push('Key: "' + data.key + '"');
+  if (data.value !== undefined) lines.push('Value: "' + data.value + '"');
+  if (data.probes) lines.push('Probes: ' + data.probes);
+  if (data.update !== undefined) lines.push(data.update ? '(updated existing)' : '(new insert)');
+  el.innerHTML = '<span class="' + cls + '">' + lines.join('\n') + '</span>';
+}
+
+function renderHex(hexLines, slot, offset) {
+  const el = document.getElementById('hex-view');
+  if (!hexLines || hexLines.length === 0) {
+    el.textContent = 'No hex data.';
+    return;
+  }
+  el.textContent = 'Slot ' + slot + ' @ ' + offset + ':\n' + hexLines.join('\n');
+}
+
+function flashSlot(idx, cls) {
+  const cell = document.getElementById('slot-' + idx);
+  if (!cell) return;
+  cell.classList.remove('flash', 'flash-read', 'flash-delete');
+  void cell.offsetWidth;
+  cell.classList.add(cls);
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  for (let i = 0; i < 64; i++) {
+    const s = slots[i] || { index: i, occupied: false };
+    const div = document.createElement('div');
+    div.className = 'slot' + (s.occupied ? ' occupied' : '');
+    div.id = 'slot-' + i;
+    const keyText = s.key ? s.key.substring(0, 8) : '';
+    div.innerHTML = '<span class="slot-idx">#' + String(i).padStart(2, '0') + '</span>'
+      + (s.occupied ? '<span class="slot-key">' + escHtml(keyText) + '</span>' : '');
+    div.onclick = () => showSlotDetail(i);
+    grid.appendChild(div);
+  }
+}
+
+function showSlotDetail(idx) {
+  const s = slots[idx];
+  const el = document.getElementById('slot-detail');
+  if (!s) { el.className = 'slot-detail'; return; }
+  el.className = 'slot-detail visible';
+  if (s.occupied) {
+    el.textContent = 'Slot #' + idx + ' @ ' + s.offset + '\nKey: "' + s.key + '"\nValue: "' + s.value + '"';
+  } else {
+    el.textContent = 'Slot #' + idx + ' @ ' + s.offset + '\n(empty)';
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function fetchSlots() {
+  try {
+    const r = await fetch('/api/slots');
+    if (r.ok) {
+      slots = await r.json();
+      renderGrid();
+    }
+  } catch(e) { /* ignore polling errors */ }
+}
+
+async function fetchStats() {
+  try {
+    const r = await fetch('/api/stats');
+    if (r.ok) {
+      const s = await r.json();
+      document.getElementById('stats').innerHTML =
+        '<span>Session: ' + s.session_id + '</span>'
+        + '<span>R_Key: ' + s.rkey + '</span>'
+        + '<span>MR: ' + s.mr_size + ' bytes (' + s.slot_count + ' slots)</span>';
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function doPut() {
+  const key = document.getElementById('key-input').value.trim();
+  const value = document.getElementById('value-input').value;
+  if (!key) { showError('Key is required'); return; }
+  if (new TextEncoder().encode(key).length > 255) { showError('Key too long (max 255 bytes)'); return; }
+  if (new TextEncoder().encode(value).length > 764) { showError('Value too long (max 764 bytes)'); return; }
+
+  try {
+    const r = await fetch('/api/kv/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value })
+    });
+    const data = await r.json();
+    if (r.ok) {
+      renderResult(data, 'op-write');
+      addLog('RDMA WRITE → slot ' + data.slot + ' @ VA ' + data.offset + ' (' + data.bytes + ' bytes) PUT "' + key + '" = "' + value + '"', 'log-write');
+      await fetchSlots();
+      flashSlot(data.slot, 'flash');
+    } else {
+      showError(data.error || 'PUT failed');
+      addLog('PUT "' + key + '" FAILED: ' + (data.error || r.statusText), 'log-error');
+    }
+  } catch(e) {
+    showError('Network error');
+    addLog('PUT "' + key + '" NETWORK ERROR', 'log-error');
+  }
+}
+
+async function doGet() {
+  const key = document.getElementById('key-input').value.trim();
+  if (!key) { showError('Key is required'); return; }
+
+  try {
+    const r = await fetch('/api/kv/' + encodeURIComponent(key));
+    const data = await r.json();
+    if (r.ok) {
+      renderResult(data, 'op-read');
+      renderHex(data.raw_hex, data.slot, data.offset);
+      addLog('RDMA READ  ← slot ' + data.slot + ' @ VA ' + data.offset + ' (' + data.bytes + ' bytes) GET "' + key + '" → "' + data.value + '"', 'log-read');
+      await fetchSlots();
+      flashSlot(data.slot, 'flash-read');
+    } else {
+      document.getElementById('result').innerHTML = '<span class="op-error">GET "' + escHtml(key) + '" → NOT FOUND</span>';
+      addLog('RDMA READ  ← GET "' + key + '" → NOT FOUND', 'log-error');
+    }
+  } catch(e) {
+    showError('Network error');
+    addLog('GET "' + key + '" NETWORK ERROR', 'log-error');
+  }
+}
+
+async function doDelete() {
+  const key = document.getElementById('key-input').value.trim();
+  if (!key) { showError('Key is required'); return; }
+
+  try {
+    const r = await fetch('/api/kv/' + encodeURIComponent(key), { method: 'DELETE' });
+    const data = await r.json();
+    if (r.ok) {
+      renderResult(data, 'op-write');
+      addLog('RDMA WRITE → slot ' + data.slot + ' @ VA ' + data.offset + ' (' + data.bytes + ' bytes) DELETE "' + key + '"', 'log-write');
+      await fetchSlots();
+      flashSlot(data.slot, 'flash-delete');
+    } else {
+      document.getElementById('result').innerHTML = '<span class="op-error">DELETE "' + escHtml(key) + '" → NOT FOUND</span>';
+      addLog('DELETE "' + key + '" → NOT FOUND', 'log-error');
+    }
+  } catch(e) {
+    showError('Network error');
+    addLog('DELETE "' + key + '" NETWORK ERROR', 'log-error');
+  }
+}
+
+document.getElementById('key-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doGet();
+});
+
+fetchStats();
+fetchSlots();
+setInterval(fetchSlots, 2000);
+</script>
+</body>
+</html>

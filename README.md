@@ -34,7 +34,7 @@ TCP and WebSocket layers.
 +--------------------------------------------------+
 ```
 
-The implementation consists of three crates:
+The implementation consists of four crates:
 
 - **`rdows-core`** — Wire types, 24-byte frame header codec, opcode
   definitions, and message payload encode/decode. No async runtime
@@ -44,22 +44,15 @@ The implementation consists of three crates:
 - **`rdows-client`** — Client library exposing an ibverbs-compatible API:
   `reg_mr`, `dereg_mr`, `post_send`, `rdma_write`, `rdma_read`,
   `atomic_cas`, `atomic_faa`, `poll_cq`.
+- **`rdows-kv`** — Key-value store demo with web UI. Uses RDMA Read/Write
+  against a 64 KiB memory region organized as a hash table. Embeds its own
+  server for single-host use, or connects to a remote server.
 
 ## Quick Start (Single Host)
 
-Generate self-signed TLS certificates for development:
-
-```sh
-./gen-certs.sh
-```
-
-Start the server:
-
-```sh
-cargo run -p rdows-server -- --bind 127.0.0.1:9443 --cert server.crt --key server.key
-```
-
-Run the examples (each starts an embedded server with ephemeral certificates):
+Every example and the KV store demo embed their own RDoWS server with
+ephemeral TLS certificates — no cert generation or separate server process
+needed.
 
 ```sh
 # Two-sided SEND/RECV
@@ -77,6 +70,21 @@ cargo run -p rdows-client --example atomic_counter
 # ERR_RNR: receive queue exhaustion and recovery
 cargo run -p rdows-client --example err_rnr_demo
 ```
+
+### KV Store Demo
+
+A key-value store where GET and PUT are implemented as RDMA Read and Write
+into a remote memory region. Includes a web UI with a live memory region
+visualizer.
+
+```sh
+cargo run -p rdows-kv
+# Open http://localhost:8080 in your browser
+```
+
+The backing store is a 64-slot hash table (64 KiB) laid out in a single
+memory region. The web UI shows the slot grid, hex view of raw RDMA reads,
+and an operation log.
 
 ## Two-Host Deployment
 
@@ -122,6 +130,21 @@ region, reads it back, and verifies the round-trip. The `atomic` mode
 initializes a remote counter to 0, increments it five times with
 Fetch-and-Add, and verifies the final value. If `--cert` is omitted, the
 system trust store is used (suitable for CA-signed certificates).
+
+### KV Store (Remote)
+
+Run the KV store web UI against a remote RDoWS server:
+
+```sh
+# On the client host (server.crt copied from server host):
+cargo run -p rdows-kv -- --remote wss://SERVER_IP:9443/rdows --cert server.crt
+
+# Or skip TLS verification for quick testing:
+cargo run -p rdows-kv -- --remote wss://SERVER_IP:9443/rdows --insecure
+```
+
+Open `http://localhost:8080` — every PUT/GET/DELETE in the browser becomes an
+RDMA Write/Read over WebSocket to the remote host's memory.
 
 
 ## Example 
