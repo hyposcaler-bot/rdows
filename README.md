@@ -19,18 +19,18 @@ TCP and WebSocket layers.
 
 ```
 +--------------------------------------------------+
-|           Application (ibverbs-style API)         |
+|           Application (ibverbs-style API)        |
 +--------------------------------------------------+
-|              RDoWS Protocol Layer                 |
+|              RDoWS Protocol Layer                |
 |  (Memory Regions, Queue Pairs, Completion Qs)    |
 +--------------------------------------------------+
-|           RDoWS Message Framing Layer             |
+|           RDoWS Message Framing Layer            |
 +--------------------------------------------------+
-|    WebSocket (RFC 6455) Binary Message Layer      |
+|    WebSocket (RFC 6455) Binary Message Layer     |
 +--------------------------------------------------+
-|              TLS 1.3 (REQUIRED)                   |
+|              TLS 1.3 (REQUIRED)                  |
 +--------------------------------------------------+
-|                      TCP                          |
+|                      TCP                         |
 +--------------------------------------------------+
 ```
 
