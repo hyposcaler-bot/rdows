@@ -1,6 +1,6 @@
 # NOTE
 
-This repo was mostly put together as part of some april fools fun. RDowS is not a real thing, or maybe it is real in as so much as it is RDMA like and it is over websockets, if you can get past the fact that it does zero copy with 7 or more copies it actually a pretty good learning tool on how RDMA looks like on the wire.
+This repo was mostly put together as part of some april fools fun. RDowS is not a real thing, or maybe it is real in as so much as it is RDMA like and it is over websockets, if you can get past the fact that it does zero copy with 7 or more copies it's actually a pretty good learning tool on what RDMA looks like on the wire.
 
 # RDoWS: RDMA over WebSockets
 
